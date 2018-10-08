@@ -1,0 +1,27 @@
+{
+    "name": "caojianfei/laravel-qcloud-cos",
+    "description": "腾讯云COS对象存储",
+    "type": "library",
+    "require": {
+        "qcloud/cos-sdk-v5": "^1.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "Caojianfei\\QcloudCos\\": "./src/"
+        }
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "caojianfei",
+            "email": "120631902@qq.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Caojianfei\\QcloudCos\\LaravelServicePorvider"
+            ]
+        }
+    }
+}
