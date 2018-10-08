@@ -12,9 +12,31 @@ use Qcloud\Cos\Client;
 use League\Flysystem\Config;
 use League\Flysystem\Filesystem;
 use Illuminate\Container\Container;
+use League\Flysystem\AdapterInterface;
+use League\Flysystem\Adapter\AbstractAdapter;
+use League\Flysystem\Adapter\CanOverwriteFiles;
 
-class QcloudCosAdapter extends AbstractAdapter
+class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
 {
+
+    protected static $metaOptions = [
+        'ACL',
+        'GrantFullControl',
+        'GrantRead',
+        'GrantWrite',
+        'StorageClass',
+        'Expires',
+        'CacheControl',
+        'ContentType',
+        'ContentDisposition',
+        'ContentEncoding',
+        'ContentLanguage',
+        'ContentLength',
+        'ContentMD5',
+        'Metadata',
+        'ServerSideEncryption'
+    ];
+
     /**
      * @var Client
      */
@@ -30,12 +52,18 @@ class QcloudCosAdapter extends AbstractAdapter
      */
     protected $config;
 
+    /**
+     * @var string
+     */
+    protected $bucket;
+
 
     public function __construct(Client $client, Container $app, array $config)
     {
         $this->client = $client;
         $this->app = $app;
         $this->config = $config;
+        $this->setBucket($config['default_bucket']);
     }
 
     public function getClient()
@@ -43,6 +71,15 @@ class QcloudCosAdapter extends AbstractAdapter
         return $this->client;
     }
 
+    public function getBucket()
+    {
+        return $this->bucket;
+    }
+    
+    public function setBucket(string $bucket)
+    {
+        $this->bucket = $bucket;
+    }
 
     /**
      * Write a new file.
@@ -55,15 +92,7 @@ class QcloudCosAdapter extends AbstractAdapter
      */
     public function write($path, $contents, Config $config)
     {
-        $opts = [
-            'Key' => $path,
-            'Bucket' => $config->get('bucket') ?? $this->config['default_bucket'],
-            'Body' => $contents,
-        ];
-
-        $this->mergeHeaders($config, $opts);
-
-        return $this->client->putObject($opts);
+        return $this->upload($path, $contents, $config);
     }
 
     /**
@@ -77,17 +106,32 @@ class QcloudCosAdapter extends AbstractAdapter
      */
     public function writeStream($path, $resource, Config $config)
     {
-        $opts = [
-            'Key' => $path,
-            'Bucket' => $config->get('bucket') ?? $this->config['default_bucket'],
-            'Body' => $resource
-        ];
+        return $this->upload($path, $resource, $config);
+    }
 
-        $this->mergeHeaders($config, $opts);
+    protected function upload($path, $body, Config $config)
+    {
+        $key = $this->applyPathPrefix($path);
+        $opts = $this->mergeMetaOptions($config, [
+            'Key' => $path,
+            'Bucket' => $this->bucket,
+            'Body' => $body
+        ]);
 
         return $this->client->putObject($opts);
     }
 
+    protected function mergeMetaOptions(Config $config, array $opts)
+    {
+        foreach (static::$metaOptions as $opt) {
+            if (! $config->has($opt)) {
+                continue;
+            }
+            $opts[$opt] = $val;
+        }
+
+        return $opts;
+    }
     /**
      * Update a file.
      *
@@ -313,12 +357,5 @@ class QcloudCosAdapter extends AbstractAdapter
 
     }
 
-    protected function mergeHeaders(Config $config, array &$opts)
-    {
-        foreach (static::UPLOAD_HEADERS as $header) {
-            if ($headerVal = $config->get($header)) {
-                $opts[$header] = $headerVal;
-            }
-        }
-    }
+
 }
