@@ -9,15 +9,32 @@
 namespace Caojianfei\QcloudCos;
 
 use Qcloud\Cos\Client;
+use League\Flysystem\Util;
 use League\Flysystem\Config;
 use League\Flysystem\Filesystem;
 use Illuminate\Container\Container;
+use Qcloud\Cos\Exception\CosException;
 use League\Flysystem\AdapterInterface;
+use Qcloud\Cos\Exception\NoSuchKeyException;
 use League\Flysystem\Adapter\AbstractAdapter;
 use League\Flysystem\Adapter\CanOverwriteFiles;
 
-class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
+
+class QcloudCosAdapter implements AdapterInterface, CanOverwriteFiles
 {
+    const PUBLIC_GRANT_URI = 'http://cam.qcloud.com/groups/global/AllUsers';
+
+    protected static $resultMap = [
+        'Body' => 'contents',
+        'ContentLength' => 'size',
+        'ContentType' => 'mimetype',
+        'Size' => 'size',
+        'Metadata' => 'metadata',
+        'StorageClass' => 'storageclass',
+        'ETag' => 'etag',
+        'VersionId' => 'versionid'
+    ];
+
 
     protected static $metaOptions = [
         'ACL',
@@ -66,27 +83,53 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
         $this->setBucket($config['default_bucket']);
     }
 
+    /**
+     * 获取 cos sdk 实例
+     *
+     * @return Client
+     */
     public function getClient()
     {
         return $this->client;
     }
 
+    /**
+     * 获取存储桶
+     *
+     * @return string
+     */
     public function getBucket()
     {
         return $this->bucket;
     }
-    
+
+    /**
+     * 设置存储桶
+     *
+     * @param string $bucket
+     */
     public function setBucket(string $bucket)
     {
         $this->bucket = $bucket;
     }
 
     /**
-     * Write a new file.
+     * 获取资源url前缀
+     *
+     * @param bool $withHttps
+     * @return string
+     */
+    public function getUrlPrefix($withHttps = false)
+    {
+        return ($withHttps ? "https://" : '') . "{$this->bucket}.{$this->config['region']}.myqcloud.com";
+    }
+
+    /**
+     * 上传新文件
      *
      * @param string $path
      * @param string $contents
-     * @param Config $config   Config object
+     * @param Config $config Config object
      *
      * @return array|false false on failure file meta data on success
      */
@@ -96,11 +139,11 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
     }
 
     /**
-     * Write a new file using a stream.
+     * 使用流上传新文件
      *
-     * @param string   $path
+     * @param string $path
      * @param resource $resource
-     * @param Config   $config   Config object
+     * @param Config $config Config object
      *
      * @return array|false false on failure file meta data on success
      */
@@ -109,22 +152,38 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
         return $this->upload($path, $resource, $config);
     }
 
+    /**
+     * 上传文件
+     *
+     * @param
+     * @param $body
+     * @param Config $config
+     * @return mixed
+     */
     protected function upload($path, $body, Config $config)
     {
-        $key = $this->applyPathPrefix($path);
         $opts = $this->mergeMetaOptions($config, [
             'Key' => $path,
             'Bucket' => $this->bucket,
             'Body' => $body
         ]);
 
-        return $this->client->putObject($opts);
+        $response = $this->client->putObject($opts);
+
+        return $this->normalizeResponse($response->toArray(), $path);
     }
 
+    /**
+     * 合并请求
+     *
+     * @param Config $config
+     * @param array $opts
+     * @return array
+     */
     protected function mergeMetaOptions(Config $config, array $opts)
     {
         foreach (static::$metaOptions as $opt) {
-            if (! $config->has($opt)) {
+            if (!$config->has($opt)) {
                 continue;
             }
             $opts[$opt] = $val;
@@ -132,12 +191,13 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
 
         return $opts;
     }
+
     /**
-     * Update a file.
+     * 更新文件
      *
      * @param string $path
      * @param string $contents
-     * @param Config $config   Config object
+     * @param Config $config Config object
      *
      * @return array|false false on failure file meta data on success
      */
@@ -147,11 +207,11 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
     }
 
     /**
-     * Update a file using a stream.
+     * 使用流更新文件
      *
-     * @param string   $path
+     * @param string $path
      * @param resource $resource
-     * @param Config   $config   Config object
+     * @param Config $config Config object
      *
      * @return array|false false on failure file meta data on success
      */
@@ -161,20 +221,24 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
     }
 
     /**
-     * Rename a file.
+     * 重命名文件，先复制后删除
      *
      * @param string $path
-     * @param string $newpath
+     * @param string $newpathdede
      *
      * @return bool
      */
     public function rename($path, $newpath)
     {
-        return false;
+        if (!$this->copy($path, $newpath)) {
+            return false;
+        }
+
+        return $this->delete($path);
     }
 
     /**
-     * Copy a file.
+     * 复制文件
      *
      * @param string $path
      * @param string $newpath
@@ -184,19 +248,18 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
     public function copy($path, $newpath)
     {
         $opts = [
-            'Bucket' => $this->config['default_bucket'],
-            'CopySource' => $path,
+            'Bucket' => $this->bucket,
+            'CopySource' => $this->getUrlPrefix() . '/' . $path,
             'Key' => $newpath
         ];
 
+        $response = $this->client->copyObject($opts);
 
-        // $this->mergeHeaders($config, $opts);
-
-        return $this->client->copyObject($opts);
+        return $this->normalizeResponse($response->toArray(), $newpath);
     }
 
     /**
-     * Delete a file.
+     * 删除文件
      *
      * @param string $path
      *
@@ -204,7 +267,12 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function delete($path)
     {
+        $this->client->deleteObject([
+            'Bucket' => $this->bucket,
+            'Key' => $path,
+        ]);
 
+        return !$this->has($path);
     }
 
     /**
@@ -216,7 +284,31 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function deleteDir($dirname)
     {
+        // TODO 需要先删除目录下所有文件然后删除目录
+        // cos 存储并没有目录的概念
+        // see https://cloud.tencent.com/document/product/436/13324
+        // php sdk 没有实现批量删除的接口，但是api是提供的(无语)
 
+        $list = $this->listContents($dirname, true);
+
+        if (count($list) === 1) {
+            return $this->delete($dirname . '/');
+        }
+
+        for ($i = 0; $i < count($list); $i++) {
+
+            if ($list[$i]['type'] === 'dir') {
+                if (!$this->delete($list[$i]['path'] . '/')) {
+                    return false;
+                }
+            } else {
+                if (!$this->delete($list[$i]['path'])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -229,11 +321,14 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function createDir($dirname, Config $config)
     {
-
+        // 根据文档意思是创建一个空的对象比如 abc/
+        // 即使目录已经存在，也会返回成功
+        $dirname = rtrim($dirname, '/') . '/';
+        return $this->write($dirname, '', $config);
     }
 
     /**
-     * Set the visibility for a file.
+     * 设置访问权限
      *
      * @param string $path
      * @param string $visibility
@@ -242,11 +337,21 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function setVisibility($path, $visibility)
     {
+        try {
+            $this->client->PutObjectAcl([
+                'Bucket' => $this->bucket,
+                'Key' => $path,
+                'ACL' => $visibility === AdapterInterface::VISIBILITY_PUBLIC ? 'public-read' : 'private',
+            ]);
+        } catch (CosException $e) {
+            return false;
+        }
 
+        return compact('path', 'visibility');
     }
 
     /**
-     * Check whether a file exists.
+     * 检测文件是否存在
      *
      * @param string $path
      *
@@ -254,14 +359,20 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function has($path)
     {
-        if ($path === 'caojf-1257704352.cos.ap-shanghai.myqcloud.com/RJNGmEcjQxMJCgGSReBjQNJsrlhPYu7PSJULy9D2.png') {
-            return true;
+        try {
+            $response = $this->client->headObject([
+                'Bucket' => $this->bucket,
+                'Key' => $path
+            ]);
+        } catch (CosException $e) {
+            return false;
         }
-        return false;
+
+        return $this->normalizeResponse($response->toArray(), $path);
     }
 
     /**
-     * Read a file.
+     * 读取文件
      *
      * @param string $path
      *
@@ -269,11 +380,17 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function read($path)
     {
+        if ($response = $this->readObject($path)) {
+            $response['contents'] = (string)$response['contents'];
+            return $response;
+        }
 
+        return false;
     }
 
+
     /**
-     * Read a file as a stream.
+     * 读取文件流
      *
      * @param string $path
      *
@@ -281,24 +398,91 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function readStream($path)
     {
+        // TODO 返回之后资源关闭了
+        if ($response = $this->readObject($path)) {
+            $response['stream'] = $response['contents']->getStream();
+            return $response;
+        }
 
+        return false;
     }
 
     /**
-     * List contents of a directory.
+     * 读取 cos 对象
+     *
+     * @param $path
+     * @return array|bool
+     */
+    protected function readObject($path)
+    {
+        try {
+            $response = $this->client->getObject([
+                'Bucket' => $this->bucket,
+                'Key' => $path
+            ]);
+        } catch (CosException $e) {
+            return false;
+        }
+
+        return $this->normalizeResponse($response->toArray(), $path);
+    }
+
+    /**
+     * 列出文件列表
      *
      * @param string $directory
-     * @param bool   $recursive
+     * @param bool $recursive
      *
      * @return array
      */
     public function listContents($directory = '', $recursive = false)
     {
+        $opts = [
+            'Bucket' => $this->bucket,
+        ];
+
+        // TODO 官方文档确实看的脑阔疼，参数不明其意，先这么处理
+        if ($directory) {
+            $opts['Prefix'] = $directory;
+            if ($recursive) {
+                $opts['Prefix'] = $directory . '/';
+            }
+        }
+
+        $listing = $this->retrievePaginatedListing($opts);
+
+        if (!$listing) {
+            return [];
+        }
+
+        $normalizer = [$this, 'normalizeResponse'];
+        $normalized = array_map($normalizer, $listing);
+        return Util::emulateDirectories($normalized);
 
     }
 
     /**
-     * Get all the meta data of a file or directory.
+     * 循环列出所有文件
+     *
+     * @param array $opts
+     * @return array
+     */
+    public function retrievePaginatedListing(array $opts)
+    {
+        $contents = [];
+        $response = $this->client->listObjects($opts);
+        $contents = $response->get('Contents');
+
+        while ($response->get('IsTruncated') && $response->get('NextMarker')) {
+            $opts['Marker'] = $response->get('NextMarker');
+            $response = $this->client->listObjects($opts);
+            $contents = array_merge($contents, $response->get('Contents'));
+        }
+        return $contents;
+    }
+
+    /**
+     * 获取文件信息
      *
      * @param string $path
      *
@@ -306,11 +490,16 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function getMetadata($path)
     {
+        $response = $this->client->headObject([
+            'Bucket' => $this->bucket,
+            'Key' => $path
+        ]);
 
+        return $this->normalizeResponse($response->toArray(), $path);
     }
 
     /**
-     * Get the size of a file.
+     * 获取文件大小
      *
      * @param string $path
      *
@@ -318,11 +507,11 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function getSize($path)
     {
-
+        return $this->getMetadata($path);
     }
 
     /**
-     * Get the mimetype of a file.
+     * 获取文件 minetype
      *
      * @param string $path
      *
@@ -330,11 +519,11 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function getMimetype($path)
     {
-
+        return $this->getMetadata($path);
     }
 
     /**
-     * Get the last modified time of a file as a timestamp.
+     * 获取文件 LastModified
      *
      * @param string $path
      *
@@ -342,11 +531,11 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function getTimestamp($path)
     {
-
+        return $this->getMetadata($path);
     }
 
     /**
-     * Get the visibility of a file.
+     * 获取文件访问权限
      *
      * @param string $path
      *
@@ -354,7 +543,80 @@ class QcloudCosAdapter extends AbstractAdapter implements CanOverwriteFiles
      */
     public function getVisibility($path)
     {
+        $response = $this->client->getObjectAcl([
+            'Bucket' => $this->bucket,
+            'Key' => $path
+        ]);
 
+        $visibility = AdapterInterface::VISIBILITY_PRIVATE;
+
+        foreach ($response->get('Grants') as $grant) {
+            if (
+                isset($grant['Grantee']['URI'])
+                && $grant['Grantee']['URI'] === self::PUBLIC_GRANT_URI
+                && $grant['Permission'] === 'READ'
+            ) {
+                $visibility = AdapterInterface::VISIBILITY_PUBLIC;
+                break;
+            }
+        }
+
+        return compact('visibility');
+    }
+
+    /**
+     * 目录连接分隔符
+     *
+     * @param $directory
+     * @return string
+     */
+    protected function applyDirectorySeparator($directory)
+    {
+        $directory = (string)$directory;
+
+        if ($directory === '') {
+            return $directory;
+        }
+
+        return $directory . $this->pathSeparator;
+    }
+
+    protected function formatContentsList($contents)
+    {
+        foreach ($contents as $key => $val) {
+            $contents[$key]['path'] = $val['Key'];
+        }
+
+        return $contents;
+    }
+
+    /**
+     * 格式化响应结果
+     *
+     * @param array $response
+     * @param string $path
+     *
+     * @return array
+     */
+    protected function normalizeResponse(array $response, $path = null)
+    {
+        $result = [
+            'path' => $path ?: (isset($response['Key']) ? $response['Key'] : (isset($response['Prefix']) ? $response['Prefix'] : null)),
+        ];
+        $result = array_merge($result, Util::pathinfo($result['path']));
+
+        if (isset($response['LastModified'])) {
+            $result['timestamp'] = strtotime($response['LastModified']);
+        }
+
+        if (substr($result['path'], -1) === '/') {
+            $result['type'] = 'dir';
+            $result['path'] = rtrim($result['path'], '/');
+
+            return $result;
+        }
+
+        return array_merge($result, Util::map($response, static::$resultMap), ['type' => 'file']);
     }
 
 
