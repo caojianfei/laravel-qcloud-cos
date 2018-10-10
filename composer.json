@@ -1,6 +1,7 @@
 {
     "name": "caojianfei/laravel-qcloud-cos",
     "description": "腾讯云COS对象存储",
+    "keywords": ["qcloud cos", "laravel", "filesystem"],
     "type": "library",
     "require": {
         "qcloud/cos-sdk-v5": "^1.2"
