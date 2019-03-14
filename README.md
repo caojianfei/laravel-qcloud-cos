@@ -8,7 +8,7 @@
 安装扩展包
 
 ```
-composer install caojianfei/laravel-qcloud-cos
+composer require caojianfei/laravel-qcloud-cos
 ```
 
 配置 filesystems.php
